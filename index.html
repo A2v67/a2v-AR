@@ -27,31 +27,63 @@
     schema: { size: { type: 'number', default: 0.85 } },
     init() {
       this._ready = false;
+      this._retries = 0;
       this.el.addEventListener('model-loaded', () => {
-        const mesh = this.el.getObject3D('mesh');
-        if (!mesh) return;
-
-        // Reset scale avant mesure pour éviter toute accumulation
-        mesh.scale.set(1, 1, 1);
-        mesh.position.set(0, 0, 0);
-
-        const box = new THREE.Box3().setFromObject(mesh);
-        const sz  = new THREE.Vector3();
-        const ctr = new THREE.Vector3();
-        box.getSize(sz);
-        box.getCenter(ctr);
-
-        // On ne se base QUE sur la largeur (X), pas sur maxDim(x,y,z)
-        const width = sz.x;
-        if (!width || !isFinite(width)) return;
-
-        const s = this.data.size / width;
-        mesh.scale.set(s, s, s);
-        // X et Z : centré. Y : le bas du modèle (box.min.y) est ramené à 0.
-        mesh.position.set(-ctr.x * s, -box.min.y * s, -ctr.z * s);
-
-        this._ready = true;
+        // On laisse passer une frame : au moment exact de "model-loaded",
+        // le mesh n'est pas toujours totalement stable pour la mesure.
+        requestAnimationFrame(() => this.fit());
       });
+    },
+
+    fit() {
+      const mesh = this.el.getObject3D('mesh');
+      if (!mesh) return;
+
+      // IMPORTANT : reactive-model tourne en continu l'entity (this.el)
+      // dès le init(), y compris avant que le modèle soit chargé (baseX:90
+      // + inclinaison du téléphone). Si on mesure la bounding box pendant
+      // que cette rotation est déjà appliquée, Box3.setFromObject() mélange
+      // les axes X/Z selon l'angle du téléphone à cet instant précis : la
+      // largeur mesurée devient incohérente (parfois beaucoup trop petite),
+      // ce qui produit un facteur d'échelle énorme -> modèle géant.
+      // On neutralise temporairement cette rotation pendant la mesure.
+      const savedRotation = this.el.object3D.rotation.clone();
+      this.el.object3D.rotation.set(0, 0, 0);
+      this.el.object3D.updateMatrixWorld(true);
+
+      // Reset scale avant mesure pour éviter toute accumulation
+      mesh.scale.set(1, 1, 1);
+      mesh.position.set(0, 0, 0);
+
+      const box = new THREE.Box3().setFromObject(mesh);
+      const sz  = new THREE.Vector3();
+      const ctr = new THREE.Vector3();
+      box.getSize(sz);
+      box.getCenter(ctr);
+
+      // On restaure la rotation dynamique (gérée par reactive-model)
+      this.el.object3D.rotation.copy(savedRotation);
+
+      // On ne se base QUE sur la largeur (X), pas sur maxDim(x,y,z)
+      const width = sz.x;
+
+      // Garde-fou : si la largeur mesurée est invalide ou anormalement
+      // petite (mesh pas encore totalement prêt), on retente à la frame
+      // suivante au lieu d'appliquer un scale absurde (modèle énorme).
+      if (!width || !isFinite(width) || width < 1e-4) {
+        if (this._retries < 60) { // ~1s à 60fps avant d'abandonner
+          this._retries++;
+          requestAnimationFrame(() => this.fit());
+        }
+        return;
+      }
+
+      const s = this.data.size / width;
+      mesh.scale.set(s, s, s);
+      // X et Z : centré. Y : le bas du modèle (box.min.y) est ramené à 0.
+      mesh.position.set(-ctr.x * s, -box.min.y * s, -ctr.z * s);
+
+      this._ready = true;
     }
   });
 
