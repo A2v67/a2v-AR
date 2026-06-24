@@ -7,7 +7,7 @@
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 
-  <title>AR App</title>
+  <title>AR Back Camera</title>
 
   <style>
     html, body {
@@ -21,10 +21,10 @@
 
     a-scene {
       position: fixed;
-      top: 0;
-      left: 0;
       width: 100vw;
       height: 100vh;
+      top: 0;
+      left: 0;
     }
   </style>
 </head>
@@ -32,7 +32,7 @@
 <body>
 
 <a-scene
-  mindar-image="imageTargetSrc: target.mind; uiScanning: true; uiLoading: true;"
+  mindar-image="imageTargetSrc: target.mind; uiScanning: true; uiLoading: true; camera: {facingMode: environment};"
   embedded
   vr-mode-ui="enabled: false"
   device-orientation-permission-ui="enabled: false"
@@ -47,13 +47,10 @@
 
   <!-- ASSETS -->
   <a-assets>
-    <a-asset-item id="model"
-      src="model.glb"
-      crossorigin="anonymous">
-    </a-asset-item>
+    <a-asset-item id="model" src="model.glb" crossorigin="anonymous"></a-asset-item>
   </a-assets>
 
-  <!-- AR TARGET -->
+  <!-- TARGET -->
   <a-entity mindar-image-target="targetIndex: 0">
 
     <a-gltf-model
