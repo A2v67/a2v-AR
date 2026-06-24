@@ -7,7 +7,7 @@
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 
-  <title>AR QR</title>
+  <title>AR</title>
 
   <style>
     html, body {
@@ -19,24 +19,37 @@
       background: black;
     }
 
-    a-scene {
+    #container {
       position: fixed;
-      top: 0;
-      left: 0;
       width: 100vw;
       height: 100vh;
+      top: 0;
+      left: 0;
+    }
+
+    a-scene {
+      width: 100%;
+      height: 100%;
     }
   </style>
 </head>
 
 <body>
 
+<div id="container">
+
 <a-scene
   mindar-image="imageTargetSrc: target.mind; uiScanning: true; uiLoading: true;"
   embedded
   vr-mode-ui="enabled: false"
   device-orientation-permission-ui="enabled: false"
-  renderer="colorManagement: true; physicallyCorrectLights: true; alpha: true">
+  renderer="alpha: true; colorManagement: true; physicallyCorrectLights: true">
+
+  <!-- CAMÉRA (IMPORTANT) -->
+  <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+  <!-- LUMIÈRE -->
+  <a-light type="ambient" intensity="1.5"></a-light>
 
   <!-- ASSETS -->
   <a-assets>
@@ -46,27 +59,22 @@
     </a-asset-item>
   </a-assets>
 
-  <!-- LIGHTS -->
-  <a-light type="ambient" intensity="1.5"></a-light>
-  <a-light type="directional" intensity="1.2" position="0 2 1"></a-light>
-
-  <!-- CAMERA -->
-  <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
-
-  <!-- AR TARGET -->
+  <!-- TARGET -->
   <a-entity mindar-image-target="targetIndex: 0">
 
     <a-gltf-model
       src="#model"
       position="0 0 0"
-      rotation="0 0 0"
       scale="0.2 0.2 0.2"
+      rotation="0 0 0"
       animation="property: rotation; to: 0 360 0; loop: true; dur: 5000">
     </a-gltf-model>
 
   </a-entity>
 
 </a-scene>
+
+</div>
 
 </body>
 </html>
