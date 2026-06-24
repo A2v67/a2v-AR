@@ -15,19 +15,25 @@
 <script>
   /*
    * fit-to-marker
-   * Scale le mesh une seule fois au chargement, sans toucher à la rotation.
-   * On stocke le scale calculé pour que reactive-model puisse l'utiliser.
+   * Scale le mesh une seule fois au chargement selon sa LARGEUR (axe X),
+   * applique une rotation fixe (par défaut 90/0/0) directement sur le mesh
+   * (indépendante du tilt géré par reactive-model sur l'entity parente),
+   * et ancre le modèle par sa BASE plutôt que par son centre, pour qu'il
+   * repose sur le marqueur au lieu d'être centré dessus verticalement.
    *
-   * Correctifs:
-   * - Suppression de l'offset de debug (90,0,0) qui faussait le centre
-   *   calculé et donc la position finale du modèle.
-   * - Ajout d'un retry (via requestAnimationFrame) si la bounding box
-   *   n'est pas encore mesurable au moment de model-loaded, au lieu
-   *   d'abandonner silencieusement (ce qui laissait le mesh à son
-   *   échelle native -> modèle "énorme" de façon aléatoire).
+   * Hypothèse: l'axe X du modèle (avant rotation) correspond à sa largeur,
+   * convention standard glTF (X = largeur, Y = hauteur, Z = profondeur).
+   *
+   * Inclut un retry (via requestAnimationFrame) si la bounding box n'est
+   * pas encore mesurable au moment de model-loaded, au lieu d'abandonner
+   * silencieusement.
    */
   AFRAME.registerComponent('fit-to-marker', {
-    schema: { size: { type: 'number', default: 0.85 } },
+    schema: {
+      size:     { type: 'number', default: 0.85 },
+      // Rotation fixe appliquée au mesh, indépendante du tilt (reactive-model)
+      rotation: { type: 'vec3',   default: { x: 90, y: 0, z: 0 } }
+    },
     init() {
       this.el.addEventListener('model-loaded', () => this.tryFit());
     },
@@ -39,26 +45,38 @@
         return;
       }
 
-      // Reset scale/position avant mesure pour éviter toute accumulation
+      // Reset scale/position, puis applique la rotation fixe AVANT de
+      // mesurer pour que la bounding box reflète l'orientation finale.
       mesh.scale.set(1, 1, 1);
       mesh.position.set(0, 0, 0);
+      mesh.rotation.set(
+        THREE.MathUtils.degToRad(this.data.rotation.x),
+        THREE.MathUtils.degToRad(this.data.rotation.y),
+        THREE.MathUtils.degToRad(this.data.rotation.z)
+      );
+      mesh.updateMatrixWorld(true);
 
       const box = new THREE.Box3().setFromObject(mesh);
       const sz  = new THREE.Vector3();
-      const ctr = new THREE.Vector3();
       box.getSize(sz);
-      box.getCenter(ctr);
 
-      const maxDim = Math.max(sz.x, sz.y, sz.z);
-      if (!maxDim || !isFinite(maxDim)) {
+      // Dimensionnement sur la LARGEUR (X) uniquement, pas la hauteur/profondeur.
+      const width = sz.x;
+      if (!width || !isFinite(width)) {
         // Bounding box pas encore prête -> on réessaie au lieu d'abandonner
         if (retries > 0) requestAnimationFrame(() => this.tryFit(retries - 1));
         return;
       }
 
-      const s = this.data.size / maxDim;
+      const s = this.data.size / width;
+
+      // Centré en X et Z, ancré par le BAS (min Y) plutôt que par le centre.
+      const ctrX    = (box.min.x + box.max.x) / 2;
+      const ctrZ    = (box.min.z + box.max.z) / 2;
+      const bottomY = box.min.y;
+
       mesh.scale.set(s, s, s);
-      mesh.position.set(-ctr.x * s, -ctr.y * s, -ctr.z * s);
+      mesh.position.set(-ctrX * s, -bottomY * s, -ctrZ * s);
     }
   });
 
@@ -254,7 +272,7 @@
       src="#model"
       position="0 0 0"
       rotation="0 0 0"
-      fit-to-marker="size: 0.85"
+      fit-to-marker="size: 0.85; rotation: 90 0 0"
       reactive-model="baseX: 0; strength: 10; smoothing: 0.07"
     ></a-gltf-model>
   </a-entity>
