@@ -7,116 +7,266 @@
 <meta name="theme-color" content="#000000" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="description" content="Expérience de réalité augmentée — scannez le marqueur pour révéler le modèle 3D." />
-<title>AR Console</title>
+<title>AR</title>
 
-<!-- A-Frame + MindAR (image tracking) -->
 <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 
 <script>
-  /**
-   * fit-to-marker
-   * -------------
-   * Calcule la bounding box réelle du modèle au chargement et le redimensionne
-   * automatiquement pour qu'il occupe une proportion cohérente du marqueur,
-   * quelle que soit l'échelle d'export du .glb. Le modèle est aussi recentré
-   * sur son propre centre géométrique pour rester parfaitement ancré, même
-   * si l'origine du fichier source n'est pas à 0,0,0.
-   */
+  /* ── fit-to-marker ─────────────────────────────────────────────────── */
   AFRAME.registerComponent('fit-to-marker', {
-    schema: {
-      size: { type: 'number', default: 0.85 } // taille cible relative à la largeur du marqueur (1 = pleine largeur)
-    },
-    init: function () {
+    schema: { size: { type: 'number', default: 0.85 } },
+    init() {
       this.el.addEventListener('model-loaded', () => {
         const mesh = this.el.getObject3D('mesh');
         if (!mesh) return;
-
-        const box = new THREE.Box3().setFromObject(mesh);
+        const box  = new THREE.Box3().setFromObject(mesh);
         const size = new THREE.Vector3();
+        const ctr  = new THREE.Vector3();
         box.getSize(size);
-        const center = new THREE.Vector3();
-        box.getCenter(center);
-
+        box.getCenter(ctr);
         const maxDim = Math.max(size.x, size.y, size.z);
-        if (!maxDim || !isFinite(maxDim)) {
-          console.warn('[fit-to-marker] Bounding box invalide, échelle par défaut conservée.');
-          return;
-        }
-
-        const scale = this.data.size / maxDim;
-        mesh.scale.set(scale, scale, scale);
-        mesh.position.set(
-          -center.x * scale,
-          -center.y * scale,
-          -center.z * scale
-        );
+        if (!maxDim || !isFinite(maxDim)) return;
+        const s = this.data.size / maxDim;
+        mesh.scale.set(s, s, s);
+        mesh.position.set(-ctr.x * s, -ctr.y * s, -ctr.z * s);
       });
     }
   });
 
-  /**
-   * toggle-on-target
-   * -----------------
-   * Masque le modèle tant que le marqueur n'est pas détecté, et le cache à
-   * nouveau dès qu'il est perdu. Évite l'effet "objet flottant figé" qui
-   * apparaît par défaut quand MindAR conserve la dernière position connue
-   * du marqueur après sa disparition du champ de la caméra.
-   */
+  /* ── toggle-on-target ──────────────────────────────────────────────── */
   AFRAME.registerComponent('toggle-on-target', {
-    init: function () {
-      const model = this.el.querySelector('[gltf-model]');
+    init() {
+      const model  = this.el.querySelector('[gltf-model]');
+      const ui     = document.getElementById('scan-ui');
+      const dot    = document.getElementById('status-dot');
+      const label  = document.getElementById('status-label');
       if (!model) return;
 
       model.object3D.visible = false;
 
       this.el.addEventListener('targetFound', () => {
         model.object3D.visible = true;
+        ui.classList.add('found');
+        dot.classList.add('found');
+        label.textContent = 'Détecté';
       });
 
       this.el.addEventListener('targetLost', () => {
         model.object3D.visible = false;
+        ui.classList.remove('found');
+        dot.classList.remove('found');
+        label.textContent = 'Scan en cours';
+      });
+    }
+  });
+
+  /* ── reactive-model ────────────────────────────────────────────────── */
+  /*  Fait légèrement pencher le modèle en fonction de l'orientation
+      physique de l'appareil — donne une sensation de "poids" et de
+      présence dans l'espace réel.                                        */
+  AFRAME.registerComponent('reactive-model', {
+    schema: {
+      strength:  { type: 'number', default: 12 },  // amplitude max (°)
+      smoothing: { type: 'number', default: 0.08 } // facteur lerp
+    },
+    init() {
+      this._gamma = 0;
+      this._beta  = 0;
+      this._tiltX = 0;
+      this._tiltY = 0;
+
+      const handler = (e) => {
+        this._gamma = e.gamma || 0;  // inclinaison gauche/droite
+        this._beta  = e.beta  || 0;  // inclinaison avant/arrière
+      };
+
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // iOS 13+ : demande permission au premier tap
+        const ask = () => {
+          DeviceOrientationEvent.requestPermission()
+            .then(r => { if (r === 'granted') window.addEventListener('deviceorientation', handler); })
+            .catch(() => {});
+          document.removeEventListener('touchstart', ask);
+        };
+        document.addEventListener('touchstart', ask, { once: true });
+      } else {
+        window.addEventListener('deviceorientation', handler, { passive: true });
+      }
+    },
+
+    tick() {
+      const strength = this.data.strength;
+      const k        = this.data.smoothing;
+
+      // Clampe l'influence à ±45° de rotation physique
+      const rawX = Math.max(-45, Math.min(45, this._beta  - 45));
+      const rawY = Math.max(-45, Math.min(45, this._gamma));
+
+      // Mappe vers ±strength degrés
+      const targetX = (rawX / 45) * strength;
+      const targetY = (rawY / 45) * strength;
+
+      // Lerp pour amortissement fluide
+      this._tiltX += (targetX - this._tiltX) * k;
+      this._tiltY += (targetY - this._tiltY) * k;
+
+      // -90 = redresse le modèle (était couché), + tilt réactif
+      const baseRot = -90;
+      this.el.setAttribute('rotation', {
+        x: baseRot + this._tiltX,
+        y: this._tiltY,
+        z: 0
       });
     }
   });
 </script>
 
 <style>
+  *, *::before, *::after { box-sizing: border-box; }
+
   html, body {
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100vh;
-    height: 100dvh;
+    margin: 0; padding: 0;
+    width: 100%; height: 100dvh;
     background: #000;
     overflow: hidden;
     position: fixed;
     touch-action: none;
-    -webkit-user-select: none;
-    user-select: none;
+    -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
   }
 
   a-scene {
-    width: 100vw;
-    height: 100vh;
-    height: 100dvh;
-    position: fixed;
-    top: 0;
-    left: 0;
+    width: 100vw; height: 100dvh;
+    position: fixed; top: 0; left: 0;
   }
 
-  /* Masque toute UI par défaut de MindAR / A-Frame */
-  .a-enter-vr,
-  .a-orientation-modal,
-  a-scene .mindar-ui-overlay {
+  .a-enter-vr, .a-orientation-modal, a-scene .mindar-ui-overlay {
     display: none !important;
+  }
+
+  /* ── UI overlay ──────────────────────────────────────────────────── */
+  #scan-ui {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 10;
+    transition: opacity 0.5s ease;
+  }
+
+  #scan-ui.found {
+    opacity: 0;
+  }
+
+  /* Cadre de visée */
+  .viewfinder {
+    width: min(260px, 68vw);
+    aspect-ratio: 1;
+    position: relative;
+  }
+
+  .viewfinder::before,
+  .viewfinder::after,
+  .viewfinder span::before,
+  .viewfinder span::after {
+    content: '';
+    position: absolute;
+    width: 28px; height: 28px;
+    border-color: rgba(255,255,255,0.85);
+    border-style: solid;
+  }
+
+  .viewfinder::before  { top: 0;    left: 0;   border-width: 2px 0 0 2px; border-radius: 3px 0 0 0; }
+  .viewfinder::after   { top: 0;    right: 0;  border-width: 2px 2px 0 0; border-radius: 0 3px 0 0; }
+  .viewfinder span::before { bottom: 0; left: 0;   border-width: 0 0 2px 2px; border-radius: 0 0 0 3px; }
+  .viewfinder span::after  { bottom: 0; right: 0;  border-width: 0 2px 2px 0; border-radius: 0 0 3px 0; }
+
+  /* Ligne de scan animée */
+  .scan-line {
+    position: absolute;
+    left: 6%; right: 6%;
+    height: 1.5px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.7), transparent);
+    top: 10%;
+    animation: scan 2.4s ease-in-out infinite;
+  }
+
+  @keyframes scan {
+    0%, 100% { top: 10%; opacity: 0; }
+    15%       { opacity: 1; }
+    85%       { opacity: 1; }
+    50%       { top: 82%; }
+  }
+
+  /* Status bar */
+  #status-bar {
+    position: fixed;
+    bottom: max(32px, env(safe-area-inset-bottom, 24px));
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 0.5px solid rgba(255,255,255,0.12);
+    border-radius: 100px;
+    padding: 8px 18px;
+    z-index: 20;
+    pointer-events: none;
+    transition: opacity 0.5s ease;
+  }
+
+  #status-bar.found {
+    opacity: 0;
+  }
+
+  #status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.35);
+    animation: pulse 1.8s ease-in-out infinite;
+    flex-shrink: 0;
+  }
+
+  #status-dot.found {
+    background: #34d399;
+    animation: none;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.35; transform: scale(1); }
+    50%       { opacity: 1;    transform: scale(1.25); }
+  }
+
+  #status-label {
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    color: rgba(255,255,255,0.75);
+    white-space: nowrap;
   }
 </style>
 </head>
 
 <body>
+
+<!-- Interface de scan -->
+<div id="scan-ui">
+  <div class="viewfinder"><span></span><div class="scan-line"></div></div>
+</div>
+
+<div id="status-bar">
+  <div id="status-dot"></div>
+  <span id="status-label">Scan en cours</span>
+</div>
 
 <a-scene
   mindar-image="imageTargetSrc: ./target.mind; autoStart: true; maxTrack: 1; uiScanning: no; uiLoading: no; uiError: no; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 2; missTolerance: 5;"
@@ -126,42 +276,35 @@
   device-orientation-permission-ui="enabled: false"
   embedded
 >
-
   <a-assets>
     <a-asset-item id="model" src="./model.glb"></a-asset-item>
   </a-assets>
 
-  <a-camera
-    position="0 0 0"
-    look-controls="enabled: false"
-    cursor="fuse: false"
-  ></a-camera>
+  <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
 
   <a-entity id="target" mindar-image-target="targetIndex: 0" toggle-on-target>
     <a-gltf-model
       id="object"
       src="#model"
       position="0 0 0"
-      rotation="0 0 0"
+      rotation="-90 0 0"
       fit-to-marker="size: 0.85"
+      reactive-model="strength: 12; smoothing: 0.08"
     ></a-gltf-model>
   </a-entity>
-
 </a-scene>
 
 <script>
-  // Robustesse : on log les erreurs MindAR/WebGL sans jamais afficher d'UI ni crasher l'app.
   document.querySelector('a-scene').addEventListener('arError', (e) => {
-    console.error('[MindAR] Erreur de tracking :', e.detail);
+    console.error('[MindAR] Erreur :', e.detail);
   });
 
   window.addEventListener('load', () => {
     const canvas = document.querySelector('canvas');
     if (!canvas) return;
-
     canvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
-      console.warn('[WebGL] Contexte perdu — la page peut nécessiter un rechargement.');
+      console.warn('[WebGL] Contexte perdu — rechargement nécessaire.');
     });
   });
 </script>
