@@ -28,7 +28,7 @@
 
         // Reset scale avant mesure pour éviter toute accumulation
         mesh.scale.set(1, 1, 1);
-        mesh.position.set(90, 0, 0);
+        mesh.position.set(0, 0, 0);
 
         const box = new THREE.Box3().setFromObject(mesh);
         const sz  = new THREE.Vector3();
@@ -60,15 +60,20 @@
       if (!model) return;
 
       model.object3D.visible = false;
+      let scanned = false;
 
       this.el.addEventListener('targetFound', () => {
         model.object3D.visible = true;
-        ui.classList.add('hidden');
+        if (!scanned) {
+          scanned = true;
+          ui.style.transition = 'opacity 0.4s ease';
+          ui.style.opacity = '0';
+          setTimeout(() => { ui.style.display = 'none'; }, 450);
+        }
       });
 
       this.el.addEventListener('targetLost', () => {
         model.object3D.visible = false;
-        ui.classList.remove('hidden');
       });
     }
   });
@@ -154,7 +159,6 @@
     display: none !important;
   }
 
-  /* Viewfinder */
   #scan-ui {
     position: fixed;
     inset: 0;
@@ -163,13 +167,6 @@
     justify-content: center;
     pointer-events: none;
     z-index: 10;
-    opacity: 1;
-    transition: opacity 0.4s ease;
-  }
-
-  #scan-ui.hidden {
-    opacity: 0;
-    pointer-events: none;
   }
 
   .viewfinder {
@@ -241,7 +238,7 @@
       position="0 0 0"
       rotation="0 0 0"
       fit-to-marker="size: 0.85"
-      reactive-model="baseX: 0; strength: 10; smoothing: 0.07"
+      reactive-model="baseX: 90; strength: 10; smoothing: 0.07"
     ></a-gltf-model>
   </a-entity>
 </a-scene>
