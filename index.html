@@ -3,34 +3,111 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="color-scheme" content="dark" />
+<meta name="theme-color" content="#000000" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="description" content="Expérience de réalité augmentée — scannez le marqueur pour révéler le modèle 3D." />
 <title>AR Console</title>
 
+<!-- A-Frame + MindAR (image tracking) -->
 <script src="https://aframe.io/releases/1.6.0/aframe.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
+
+<script>
+  /**
+   * fit-to-marker
+   * -------------
+   * Calcule la bounding box réelle du modèle au chargement et le redimensionne
+   * automatiquement pour qu'il occupe une proportion cohérente du marqueur,
+   * quelle que soit l'échelle d'export du .glb. Le modèle est aussi recentré
+   * sur son propre centre géométrique pour rester parfaitement ancré, même
+   * si l'origine du fichier source n'est pas à 0,0,0.
+   */
+  AFRAME.registerComponent('fit-to-marker', {
+    schema: {
+      size: { type: 'number', default: 0.85 } // taille cible relative à la largeur du marqueur (1 = pleine largeur)
+    },
+    init: function () {
+      this.el.addEventListener('model-loaded', () => {
+        const mesh = this.el.getObject3D('mesh');
+        if (!mesh) return;
+
+        const box = new THREE.Box3().setFromObject(mesh);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+
+        const maxDim = Math.max(size.x, size.y, size.z);
+        if (!maxDim || !isFinite(maxDim)) {
+          console.warn('[fit-to-marker] Bounding box invalide, échelle par défaut conservée.');
+          return;
+        }
+
+        const scale = this.data.size / maxDim;
+        mesh.scale.set(scale, scale, scale);
+        mesh.position.set(
+          -center.x * scale,
+          -center.y * scale,
+          -center.z * scale
+        );
+      });
+    }
+  });
+
+  /**
+   * toggle-on-target
+   * -----------------
+   * Masque le modèle tant que le marqueur n'est pas détecté, et le cache à
+   * nouveau dès qu'il est perdu. Évite l'effet "objet flottant figé" qui
+   * apparaît par défaut quand MindAR conserve la dernière position connue
+   * du marqueur après sa disparition du champ de la caméra.
+   */
+  AFRAME.registerComponent('toggle-on-target', {
+    init: function () {
+      const model = this.el.querySelector('[gltf-model]');
+      if (!model) return;
+
+      model.object3D.visible = false;
+
+      this.el.addEventListener('targetFound', () => {
+        model.object3D.visible = true;
+      });
+
+      this.el.addEventListener('targetLost', () => {
+        model.object3D.visible = false;
+      });
+    }
+  });
+</script>
 
 <style>
   html, body {
     margin: 0;
     padding: 0;
     width: 100%;
-    height: 100%;
+    height: 100vh;
+    height: 100dvh;
     background: #000;
     overflow: hidden;
     position: fixed;
     touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
 
   a-scene {
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     position: fixed;
     top: 0;
     left: 0;
   }
 
-  /* On masque toute UI par défaut de MindAR / A-Frame */
+  /* Masque toute UI par défaut de MindAR / A-Frame */
   .a-enter-vr,
   .a-orientation-modal,
   a-scene .mindar-ui-overlay {
@@ -42,7 +119,7 @@
 <body>
 
 <a-scene
-  mindar-image="imageTargetSrc: ./target.mind; autoStart: true; uiScanning: no; uiLoading: no; uiError: no; filterMinCF: 0.0001; filterBeta: 0.001;"
+  mindar-image="imageTargetSrc: ./target.mind; autoStart: true; maxTrack: 1; uiScanning: no; uiLoading: no; uiError: no; filterMinCF: 0.0001; filterBeta: 0.001; warmupTolerance: 2; missTolerance: 5;"
   color-space="sRGB"
   renderer="colorManagement: true; physicallyCorrectLights: true; alpha: true; antialias: true"
   vr-mode-ui="enabled: false"
@@ -58,21 +135,36 @@
     position="0 0 0"
     look-controls="enabled: false"
     cursor="fuse: false"
-    raycaster="far: 10000; objects: .clickable"
   ></a-camera>
 
-  <a-entity id="target" mindar-image-target="targetIndex: 0">
+  <a-entity id="target" mindar-image-target="targetIndex: 0" toggle-on-target>
     <a-gltf-model
       id="object"
       src="#model"
       position="0 0 0"
       rotation="0 0 0"
-      scale="0.3 0.3 0.3"
-      animation="property: rotation; to: 0 360 0; loop: true; dur: 12000; easing: linear"
+      fit-to-marker="size: 0.85"
     ></a-gltf-model>
   </a-entity>
 
 </a-scene>
+
+<script>
+  // Robustesse : on log les erreurs MindAR/WebGL sans jamais afficher d'UI ni crasher l'app.
+  document.querySelector('a-scene').addEventListener('arError', (e) => {
+    console.error('[MindAR] Erreur de tracking :', e.detail);
+  });
+
+  window.addEventListener('load', () => {
+    const canvas = document.querySelector('canvas');
+    if (!canvas) return;
+
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      console.warn('[WebGL] Contexte perdu — la page peut nécessiter un rechargement.');
+    });
+  });
+</script>
 
 </body>
 </html>
