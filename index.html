@@ -13,112 +13,120 @@
 <script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"></script>
 
 <script>
-  /* ── fit-to-marker ─────────────────────────────────────────────────── */
+  /*
+   * fit-to-marker
+   * Scale le mesh une seule fois au chargement, sans toucher à la rotation.
+   * On stocke le scale calculé pour que reactive-model puisse l'utiliser.
+   */
   AFRAME.registerComponent('fit-to-marker', {
     schema: { size: { type: 'number', default: 0.85 } },
     init() {
+      this._ready = false;
       this.el.addEventListener('model-loaded', () => {
         const mesh = this.el.getObject3D('mesh');
         if (!mesh) return;
-        const box  = new THREE.Box3().setFromObject(mesh);
-        const size = new THREE.Vector3();
-        const ctr  = new THREE.Vector3();
-        box.getSize(size);
+
+        // Reset scale avant mesure pour éviter toute accumulation
+        mesh.scale.set(1, 1, 1);
+        mesh.position.set(0, 0, 0);
+
+        const box = new THREE.Box3().setFromObject(mesh);
+        const sz  = new THREE.Vector3();
+        const ctr = new THREE.Vector3();
+        box.getSize(sz);
         box.getCenter(ctr);
-        const maxDim = Math.max(size.x, size.y, size.z);
+
+        const maxDim = Math.max(sz.x, sz.y, sz.z);
         if (!maxDim || !isFinite(maxDim)) return;
+
         const s = this.data.size / maxDim;
         mesh.scale.set(s, s, s);
         mesh.position.set(-ctr.x * s, -ctr.y * s, -ctr.z * s);
+
+        this._ready = true;
       });
     }
   });
 
-  /* ── toggle-on-target ──────────────────────────────────────────────── */
+  /*
+   * toggle-on-target
+   * Cache le modèle tant que le marqueur n'est pas vu.
+   * Gère aussi l'UI (viewfinder).
+   */
   AFRAME.registerComponent('toggle-on-target', {
     init() {
-      const model  = this.el.querySelector('[gltf-model]');
-      const ui     = document.getElementById('scan-ui');
-      const dot    = document.getElementById('status-dot');
-      const label  = document.getElementById('status-label');
+      const model = this.el.querySelector('[gltf-model]');
+      const ui    = document.getElementById('scan-ui');
       if (!model) return;
 
       model.object3D.visible = false;
 
       this.el.addEventListener('targetFound', () => {
         model.object3D.visible = true;
-        ui.classList.add('found');
-        dot.classList.add('found');
-        label.textContent = 'Détecté';
+        ui.classList.add('hidden');
       });
 
       this.el.addEventListener('targetLost', () => {
         model.object3D.visible = false;
-        ui.classList.remove('found');
-        dot.classList.remove('found');
-        label.textContent = 'Scan en cours';
+        ui.classList.remove('hidden');
       });
     }
   });
 
-  /* ── reactive-model ────────────────────────────────────────────────── */
-  /*  Fait légèrement pencher le modèle en fonction de l'orientation
-      physique de l'appareil — donne une sensation de "poids" et de
-      présence dans l'espace réel.                                        */
+  /*
+   * reactive-model
+   * Incline l'entity (pas le mesh) selon l'orientation de l'appareil.
+   * La rotation de base (pour redresser le modèle) est définie ici,
+   * séparée du scale géré par fit-to-marker.
+   */
   AFRAME.registerComponent('reactive-model', {
     schema: {
-      strength:  { type: 'number', default: 12 },  // amplitude max (°)
-      smoothing: { type: 'number', default: 0.08 } // facteur lerp
+      baseX:     { type: 'number', default: 0   },
+      strength:  { type: 'number', default: 10  },
+      smoothing: { type: 'number', default: 0.07 }
     },
     init() {
-      this._gamma = 0;
-      this._beta  = 0;
-      this._tiltX = 0;
-      this._tiltY = 0;
+      this._rawGamma = 0;
+      this._rawBeta  = 0;
+      this._tiltX    = 0;
+      this._tiltY    = 0;
 
-      const handler = (e) => {
-        this._gamma = e.gamma || 0;  // inclinaison gauche/droite
-        this._beta  = e.beta  || 0;  // inclinaison avant/arrière
+      const onOrientation = (e) => {
+        this._rawGamma = e.gamma || 0;
+        this._rawBeta  = e.beta  || 0;
       };
 
       if (typeof DeviceOrientationEvent !== 'undefined' &&
           typeof DeviceOrientationEvent.requestPermission === 'function') {
-        // iOS 13+ : demande permission au premier tap
-        const ask = () => {
+        document.addEventListener('touchstart', () => {
           DeviceOrientationEvent.requestPermission()
-            .then(r => { if (r === 'granted') window.addEventListener('deviceorientation', handler); })
+            .then(r => { if (r === 'granted') window.addEventListener('deviceorientation', onOrientation, { passive: true }); })
             .catch(() => {});
-          document.removeEventListener('touchstart', ask);
-        };
-        document.addEventListener('touchstart', ask, { once: true });
+        }, { once: true });
       } else {
-        window.addEventListener('deviceorientation', handler, { passive: true });
+        window.addEventListener('deviceorientation', onOrientation, { passive: true });
       }
     },
 
     tick() {
-      const strength = this.data.strength;
-      const k        = this.data.smoothing;
+      const k  = this.data.smoothing;
+      const st = this.data.strength;
 
-      // Clampe l'influence à ±45° de rotation physique
-      const rawX = Math.max(-45, Math.min(45, this._beta  - 45));
-      const rawY = Math.max(-45, Math.min(45, this._gamma));
+      // Inclinaison relative à la position "téléphone tenu verticalement"
+      const rawX = Math.max(-45, Math.min(45, this._rawBeta  - 90));
+      const rawY = Math.max(-45, Math.min(45, this._rawGamma));
 
-      // Mappe vers ±strength degrés
-      const targetX = (rawX / 45) * strength;
-      const targetY = (rawY / 45) * strength;
+      const targetX = (rawX / 45) * st;
+      const targetY = (rawY / 45) * st;
 
-      // Lerp pour amortissement fluide
       this._tiltX += (targetX - this._tiltX) * k;
       this._tiltY += (targetY - this._tiltY) * k;
 
-      // -90 = redresse le modèle (était couché), + tilt réactif
-      const baseRot = -90;
-      this.el.setAttribute('rotation', {
-        x: baseRot + this._tiltX,
-        y: this._tiltY,
-        z: 0
-      });
+      this.el.object3D.rotation.set(
+        THREE.MathUtils.degToRad(this.data.baseX + this._tiltX),
+        THREE.MathUtils.degToRad(this._tiltY),
+        0
+      );
     }
   });
 </script>
@@ -135,7 +143,6 @@
     touch-action: none;
     -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
-    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif;
   }
 
   a-scene {
@@ -147,26 +154,26 @@
     display: none !important;
   }
 
-  /* ── UI overlay ──────────────────────────────────────────────────── */
+  /* Viewfinder */
   #scan-ui {
     position: fixed;
     inset: 0;
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
     pointer-events: none;
     z-index: 10;
-    transition: opacity 0.5s ease;
+    opacity: 1;
+    transition: opacity 0.4s ease;
   }
 
-  #scan-ui.found {
+  #scan-ui.hidden {
     opacity: 0;
+    pointer-events: none;
   }
 
-  /* Cadre de visée */
   .viewfinder {
-    width: min(260px, 68vw);
+    width: min(240px, 62vw);
     aspect-ratio: 1;
     position: relative;
   }
@@ -177,95 +184,40 @@
   .viewfinder span::after {
     content: '';
     position: absolute;
-    width: 28px; height: 28px;
-    border-color: rgba(255,255,255,0.85);
+    width: 24px; height: 24px;
+    border-color: rgba(255,255,255,0.8);
     border-style: solid;
   }
 
-  .viewfinder::before  { top: 0;    left: 0;   border-width: 2px 0 0 2px; border-radius: 3px 0 0 0; }
-  .viewfinder::after   { top: 0;    right: 0;  border-width: 2px 2px 0 0; border-radius: 0 3px 0 0; }
-  .viewfinder span::before { bottom: 0; left: 0;   border-width: 0 0 2px 2px; border-radius: 0 0 0 3px; }
-  .viewfinder span::after  { bottom: 0; right: 0;  border-width: 0 2px 2px 0; border-radius: 0 0 3px 0; }
+  .viewfinder::before       { top: 0;    left: 0;   border-width: 2px 0 0 2px; border-radius: 3px 0 0 0; }
+  .viewfinder::after        { top: 0;    right: 0;  border-width: 2px 2px 0 0; border-radius: 0 3px 0 0; }
+  .viewfinder span::before  { bottom: 0; left: 0;   border-width: 0 0 2px 2px; border-radius: 0 0 0 3px; }
+  .viewfinder span::after   { bottom: 0; right: 0;  border-width: 0 2px 2px 0; border-radius: 0 0 3px 0; }
 
-  /* Ligne de scan animée */
   .scan-line {
     position: absolute;
     left: 6%; right: 6%;
-    height: 1.5px;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.7), transparent);
-    top: 10%;
-    animation: scan 2.4s ease-in-out infinite;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6), transparent);
+    animation: scanmove 2.2s ease-in-out infinite;
   }
 
-  @keyframes scan {
-    0%, 100% { top: 10%; opacity: 0; }
-    15%       { opacity: 1; }
-    85%       { opacity: 1; }
-    50%       { top: 82%; }
-  }
-
-  /* Status bar */
-  #status-bar {
-    position: fixed;
-    bottom: max(32px, env(safe-area-inset-bottom, 24px));
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(0,0,0,0.55);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-    border: 0.5px solid rgba(255,255,255,0.12);
-    border-radius: 100px;
-    padding: 8px 18px;
-    z-index: 20;
-    pointer-events: none;
-    transition: opacity 0.5s ease;
-  }
-
-  #status-bar.found {
-    opacity: 0;
-  }
-
-  #status-dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.35);
-    animation: pulse 1.8s ease-in-out infinite;
-    flex-shrink: 0;
-  }
-
-  #status-dot.found {
-    background: #34d399;
-    animation: none;
-  }
-
-  @keyframes pulse {
-    0%, 100% { opacity: 0.35; transform: scale(1); }
-    50%       { opacity: 1;    transform: scale(1.25); }
-  }
-
-  #status-label {
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.04em;
-    color: rgba(255,255,255,0.75);
-    white-space: nowrap;
+  @keyframes scanmove {
+    0%   { top: 8%;  opacity: 0; }
+    10%  { opacity: 1; }
+    90%  { opacity: 1; }
+    100% { top: 88%; opacity: 0; }
   }
 </style>
 </head>
 
 <body>
 
-<!-- Interface de scan -->
 <div id="scan-ui">
-  <div class="viewfinder"><span></span><div class="scan-line"></div></div>
-</div>
-
-<div id="status-bar">
-  <div id="status-dot"></div>
-  <span id="status-label">Scan en cours</span>
+  <div class="viewfinder">
+    <span></span>
+    <div class="scan-line"></div>
+  </div>
 </div>
 
 <a-scene
@@ -287,25 +239,20 @@
       id="object"
       src="#model"
       position="0 0 0"
-      rotation="-90 0 0"
+      rotation="0 0 0"
       fit-to-marker="size: 0.85"
-      reactive-model="strength: 12; smoothing: 0.08"
+      reactive-model="baseX: 0; strength: 10; smoothing: 0.07"
     ></a-gltf-model>
   </a-entity>
 </a-scene>
 
 <script>
   document.querySelector('a-scene').addEventListener('arError', (e) => {
-    console.error('[MindAR] Erreur :', e.detail);
+    console.error('[MindAR]', e.detail);
   });
-
   window.addEventListener('load', () => {
-    const canvas = document.querySelector('canvas');
-    if (!canvas) return;
-    canvas.addEventListener('webglcontextlost', (e) => {
-      e.preventDefault();
-      console.warn('[WebGL] Contexte perdu — rechargement nécessaire.');
-    });
+    const c = document.querySelector('canvas');
+    if (c) c.addEventListener('webglcontextlost', (e) => { e.preventDefault(); });
   });
 </script>
 
