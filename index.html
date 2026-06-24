@@ -1,4 +1,4 @@
-¨<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="fr">
 <head>
 <meta charset="UTF-8" />
@@ -18,8 +18,10 @@
    * Scale le mesh une seule fois au chargement, sans toucher à la rotation.
    * La largeur (axe X) du modèle est calée sur "size" (qui correspond à la
    * largeur du marqueur AR, ~1 unité dans MindAR). La hauteur n'entre PAS
-   * dans le calcul : elle suit simplement le ratio du modèle une fois la
-   * largeur fixée (scale uniforme).
+   * dans le calcul du scale : elle suit simplement le ratio du modèle une
+   * fois la largeur fixée (scale uniforme).
+   * Positionnement : centré en X et Z, mais calé par le BAS en Y (le bas du
+   * modèle touche le centre du marqueur, au lieu d'être centré verticalement).
    */
   AFRAME.registerComponent('fit-to-marker', {
     schema: { size: { type: 'number', default: 0.85 } },
@@ -45,7 +47,8 @@
 
         const s = this.data.size / width;
         mesh.scale.set(s, s, s);
-        mesh.position.set(-ctr.x * s, -ctr.y * s, -ctr.z * s);
+        // X et Z : centré. Y : le bas du modèle (box.min.y) est ramené à 0.
+        mesh.position.set(-ctr.x * s, -box.min.y * s, -ctr.z * s);
 
         this._ready = true;
       });
