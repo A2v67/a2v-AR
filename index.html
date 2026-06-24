@@ -84,6 +84,9 @@
       mesh.position.set(-ctr.x * s, -box.min.y * s, -ctr.z * s);
 
       this._ready = true;
+      // Signale à toggle-on-target que le fit est terminé : le modèle
+      // ne sera révélé qu'à partir de cet événement, jamais avant.
+      this.el.emit('model-fitted');
     }
   });
 
@@ -99,10 +102,25 @@
       if (!model) return;
 
       model.object3D.visible = false;
-      let scanned = false;
+
+      let targetVisible = false;
+      let modelFitted   = false;
+      let scanned       = false;
+
+      const updateVisibility = () => {
+        // Jamais visible tant que les DEUX conditions ne sont pas réunies :
+        // marqueur détecté ET scale correctement calculé.
+        model.object3D.visible = targetVisible && modelFitted;
+      };
+
+      model.addEventListener('model-fitted', () => {
+        modelFitted = true;
+        updateVisibility();
+      });
 
       this.el.addEventListener('targetFound', () => {
-        model.object3D.visible = true;
+        targetVisible = true;
+        updateVisibility();
         if (!scanned) {
           scanned = true;
           ui.style.transition = 'opacity 0.4s ease';
@@ -112,7 +130,8 @@
       });
 
       this.el.addEventListener('targetLost', () => {
-        model.object3D.visible = false;
+        targetVisible = false;
+        updateVisibility();
       });
     }
   });
