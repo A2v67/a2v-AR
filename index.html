@@ -15,68 +15,78 @@
 <script>
   /*
    * fit-to-marker
-   * Scale le mesh une seule fois au chargement selon sa LARGEUR (axe X),
-   * applique une rotation fixe (par défaut 90/0/0) directement sur le mesh
-   * (indépendante du tilt géré par reactive-model sur l'entity parente),
-   * et ancre le modèle par sa BASE plutôt que par son centre, pour qu'il
-   * repose sur le marqueur au lieu d'être centré dessus verticalement.
-   *
-   * Hypothèse: l'axe X du modèle (avant rotation) correspond à sa largeur,
-   * convention standard glTF (X = largeur, Y = hauteur, Z = profondeur).
-   *
-   * Inclut un retry (via requestAnimationFrame) si la bounding box n'est
-   * pas encore mesurable au moment de model-loaded, au lieu d'abandonner
-   * silencieusement.
+   * Scale le mesh une seule fois au chargement, sans toucher à la rotation.
+   * La largeur (axe X) du modèle est calée sur "size" (qui correspond à la
+   * largeur du marqueur AR, ~1 unité dans MindAR). La hauteur n'entre PAS
+   * dans le calcul du scale : elle suit simplement le ratio du modèle une
+   * fois la largeur fixée (scale uniforme).
+   * Positionnement : centré en X et Z, mais calé par le BAS en Y (le bas du
+   * modèle touche le centre du marqueur, au lieu d'être centré verticalement).
    */
   AFRAME.registerComponent('fit-to-marker', {
-    schema: {
-      size:     { type: 'number', default: 0.85 },
-      // Rotation fixe appliquée au mesh, indépendante du tilt (reactive-model)
-      rotation: { type: 'vec3',   default: { x: 90, y: 0, z: 0 } }
-    },
+    schema: { size: { type: 'number', default: 0.85 } },
     init() {
-      this.el.addEventListener('model-loaded', () => this.tryFit());
+      this._ready = false;
+      this._retries = 0;
+      this.el.addEventListener('model-loaded', () => {
+        // On laisse passer une frame : au moment exact de "model-loaded",
+        // le mesh n'est pas toujours totalement stable pour la mesure.
+        requestAnimationFrame(() => this.fit());
+      });
     },
 
-    tryFit(retries = 10) {
+    fit() {
       const mesh = this.el.getObject3D('mesh');
-      if (!mesh) {
-        if (retries > 0) requestAnimationFrame(() => this.tryFit(retries - 1));
-        return;
-      }
+      if (!mesh) return;
 
-      // Reset scale/position, puis applique la rotation fixe AVANT de
-      // mesurer pour que la bounding box reflète l'orientation finale.
+      // IMPORTANT : reactive-model tourne en continu l'entity (this.el)
+      // dès le init(), y compris avant que le modèle soit chargé (baseX:90
+      // + inclinaison du téléphone). Si on mesure la bounding box pendant
+      // que cette rotation est déjà appliquée, Box3.setFromObject() mélange
+      // les axes X/Z selon l'angle du téléphone à cet instant précis : la
+      // largeur mesurée devient incohérente (parfois beaucoup trop petite),
+      // ce qui produit un facteur d'échelle énorme -> modèle géant.
+      // On neutralise temporairement cette rotation pendant la mesure.
+      const savedRotation = this.el.object3D.rotation.clone();
+      this.el.object3D.rotation.set(0, 0, 0);
+      this.el.object3D.updateMatrixWorld(true);
+
+      // Reset scale avant mesure pour éviter toute accumulation
       mesh.scale.set(1, 1, 1);
       mesh.position.set(0, 0, 0);
-      mesh.rotation.set(
-        THREE.MathUtils.degToRad(this.data.rotation.x),
-        THREE.MathUtils.degToRad(this.data.rotation.y),
-        THREE.MathUtils.degToRad(this.data.rotation.z)
-      );
-      mesh.updateMatrixWorld(true);
 
       const box = new THREE.Box3().setFromObject(mesh);
       const sz  = new THREE.Vector3();
+      const ctr = new THREE.Vector3();
       box.getSize(sz);
+      box.getCenter(ctr);
 
-      // Dimensionnement sur la LARGEUR (X) uniquement, pas la hauteur/profondeur.
+      // On restaure la rotation dynamique (gérée par reactive-model)
+      this.el.object3D.rotation.copy(savedRotation);
+
+      // On ne se base QUE sur la largeur (X), pas sur maxDim(x,y,z)
       const width = sz.x;
-      if (!width || !isFinite(width)) {
-        // Bounding box pas encore prête -> on réessaie au lieu d'abandonner
-        if (retries > 0) requestAnimationFrame(() => this.tryFit(retries - 1));
+
+      // Garde-fou : si la largeur mesurée est invalide ou anormalement
+      // petite (mesh pas encore totalement prêt), on retente à la frame
+      // suivante au lieu d'appliquer un scale absurde (modèle énorme).
+      if (!width || !isFinite(width) || width < 1e-4) {
+        if (this._retries < 60) { // ~1s à 60fps avant d'abandonner
+          this._retries++;
+          requestAnimationFrame(() => this.fit());
+        }
         return;
       }
 
       const s = this.data.size / width;
-
-      // Centré en X et Z, ancré par le BAS (min Y) plutôt que par le centre.
-      const ctrX    = (box.min.x + box.max.x) / 2;
-      const ctrZ    = (box.min.z + box.max.z) / 2;
-      const bottomY = box.min.y;
-
       mesh.scale.set(s, s, s);
-      mesh.position.set(-ctrX * s, -bottomY * s, -ctrZ * s);
+      // X et Z : centré. Y : le bas du modèle (box.min.y) est ramené à 0.
+      mesh.position.set(-ctr.x * s, -box.min.y * s, -ctr.z * s);
+
+      this._ready = true;
+      // Signale à toggle-on-target que le fit est terminé : le modèle
+      // ne sera révélé qu'à partir de cet événement, jamais avant.
+      this.el.emit('model-fitted');
     }
   });
 
@@ -87,21 +97,37 @@
    */
   AFRAME.registerComponent('toggle-on-target', {
     init() {
-      const model = this.el.querySelector('[gltf-model]');
-      const ui    = document.getElementById('scan-ui');
-      if (!model) return;
-
-      model.object3D.visible = false;
+      this.model = this.el.querySelector('[gltf-model]');
+      this.ui    = document.getElementById('scan-ui');
+      this.targetVisible = false;
+      this._scanned = false;
 
       this.el.addEventListener('targetFound', () => {
-        model.object3D.visible = true;
-        ui.classList.add('hidden');
+        this.targetVisible = true;
+        if (!this._scanned && this.ui) {
+          this._scanned = true;
+          this.ui.style.transition = 'opacity 0.4s ease';
+          this.ui.style.opacity = '0';
+          setTimeout(() => { this.ui.style.display = 'none'; }, 450);
+        }
       });
 
       this.el.addEventListener('targetLost', () => {
-        model.object3D.visible = false;
-        ui.classList.remove('hidden');
+        this.targetVisible = false;
       });
+
+      if (this.model) this.model.object3D.visible = false;
+    },
+
+    // Vérifié à CHAQUE frame plutôt que via un événement custom : plus
+    // robuste, pas de risque qu'un événement parte avant que le listener
+    // soit prêt, ou se perde. Le modèle n'est visible que si le marqueur
+    // est détecté ET que fit-to-marker a confirmé son scale (_ready).
+    tick() {
+      if (!this.model) return;
+      const fitComp = this.model.components && this.model.components['fit-to-marker'];
+      const ready = !fitComp || fitComp._ready; // si pas de fit-to-marker, ne bloque pas
+      this.model.object3D.visible = this.targetVisible && ready;
     }
   });
 
@@ -186,7 +212,6 @@
     display: none !important;
   }
 
-  /* Viewfinder */
   #scan-ui {
     position: fixed;
     inset: 0;
@@ -195,13 +220,6 @@
     justify-content: center;
     pointer-events: none;
     z-index: 10;
-    opacity: 1;
-    transition: opacity 0.4s ease;
-  }
-
-  #scan-ui.hidden {
-    opacity: 0;
-    pointer-events: none;
   }
 
   .viewfinder {
@@ -272,8 +290,8 @@
       src="#model"
       position="0 0 0"
       rotation="0 0 0"
-      fit-to-marker="size: 0.85; rotation: 90 0 0"
-      reactive-model="baseX: 0; strength: 10; smoothing: 0.07"
+      fit-to-marker="size: 0.85"
+      reactive-model="baseX: 90; strength: 10; smoothing: 0.07"
     ></a-gltf-model>
   </a-entity>
 </a-scene>
