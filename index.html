@@ -97,42 +97,37 @@
    */
   AFRAME.registerComponent('toggle-on-target', {
     init() {
-      const model = this.el.querySelector('[gltf-model]');
-      const ui    = document.getElementById('scan-ui');
-      if (!model) return;
-
-      model.object3D.visible = false;
-
-      let targetVisible = false;
-      let modelFitted   = false;
-      let scanned       = false;
-
-      const updateVisibility = () => {
-        // Jamais visible tant que les DEUX conditions ne sont pas réunies :
-        // marqueur détecté ET scale correctement calculé.
-        model.object3D.visible = targetVisible && modelFitted;
-      };
-
-      model.addEventListener('model-fitted', () => {
-        modelFitted = true;
-        updateVisibility();
-      });
+      this.model = this.el.querySelector('[gltf-model]');
+      this.ui    = document.getElementById('scan-ui');
+      this.targetVisible = false;
+      this._scanned = false;
 
       this.el.addEventListener('targetFound', () => {
-        targetVisible = true;
-        updateVisibility();
-        if (!scanned) {
-          scanned = true;
-          ui.style.transition = 'opacity 0.4s ease';
-          ui.style.opacity = '0';
-          setTimeout(() => { ui.style.display = 'none'; }, 450);
+        this.targetVisible = true;
+        if (!this._scanned && this.ui) {
+          this._scanned = true;
+          this.ui.style.transition = 'opacity 0.4s ease';
+          this.ui.style.opacity = '0';
+          setTimeout(() => { this.ui.style.display = 'none'; }, 450);
         }
       });
 
       this.el.addEventListener('targetLost', () => {
-        targetVisible = false;
-        updateVisibility();
+        this.targetVisible = false;
       });
+
+      if (this.model) this.model.object3D.visible = false;
+    },
+
+    // Vérifié à CHAQUE frame plutôt que via un événement custom : plus
+    // robuste, pas de risque qu'un événement parte avant que le listener
+    // soit prêt, ou se perde. Le modèle n'est visible que si le marqueur
+    // est détecté ET que fit-to-marker a confirmé son scale (_ready).
+    tick() {
+      if (!this.model) return;
+      const fitComp = this.model.components && this.model.components['fit-to-marker'];
+      const ready = !fitComp || fitComp._ready; // si pas de fit-to-marker, ne bloque pas
+      this.model.object3D.visible = this.targetVisible && ready;
     }
   });
 
